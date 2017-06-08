@@ -97,11 +97,26 @@ func run(coverprofile string, args []string, covermode, cpu, parallel, timeout s
 	if len(pkgs) == 0 {
 		pkgs = []string{"."}
 	}
-	coverpkg := strings.Join(pkgs, ",")
-	optionalArgs := buildOptionalTestArgs(coverpkg, covermode, cpu, parallel, timeout, short, v)
 	cpss := make([][]*cover.Profile, len(pkgs))
 	hasFailedTest := false
 	for i, pkg := range pkgs {
+		if process, err := hasTests(pkg); (err != nil) || !process {
+			if err != nil {
+				log.Printf("got error when checking tests for package %q: %v", pkg, err)
+			} else {
+				log.Printf("Package %q has no tests defined", pkg)
+			}
+			continue
+		}
+		deps, err := getPackageDependencies(pkg, pkgs)
+		if err != nil {
+			log.Printf("got error when getting dependencies for package %q: %v", pkg, err)
+			continue
+		} else {
+			log.Printf("%s package own depenencies: %v", pkg, deps)
+		}
+		coverpkg  := strings.Join(deps, ",")
+		optionalArgs := buildOptionalTestArgs(coverpkg, covermode, cpu, parallel, timeout, short, v)
 		cps, success, err := coverage(pkg, optionalArgs, v)
 		if !success {
 			hasFailedTest = true
@@ -121,6 +136,37 @@ func run(coverprofile string, args []string, covermode, cpu, parallel, timeout s
 	}
 	return nil
 }
+
+func getPackageDependencies(pkgName string, projectPackages []string) ([]string, error) {
+	// call go list '{{ .Deps }}
+	args := []string{"list", "-f", `{{ join .Deps " "}}`, pkgName}
+	out, err := exec.Command("go", args...).CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	allDeps := strings.Fields(strings.Trim(string(out), "\n"))
+	ownDeps := make([]string, 0, len(allDeps))
+	for _, dep := range(allDeps) {
+		for _, pkg := range(projectPackages) {
+			if dep == pkg {
+				ownDeps = append(ownDeps, dep)
+				break
+			}
+		}
+	}
+	return ownDeps, nil
+}
+
+func hasTests(pkgName string) (bool, error) {
+	args := []string{"list", "-f", `{{ join .TestGoFiles " "}}`, pkgName}
+	out, err := exec.Command("go", args...).CombinedOutput()
+	if err != nil {
+		return false, err
+	}
+	tests := strings.Fields(strings.Trim(string(out), "\n"))
+	return len(tests) > 0, nil
+}
+
 
 // buildOptionalTestArgs returns common optional args for go test regardless
 // target packages. coverpkg must not be empty.
@@ -150,7 +196,7 @@ func buildOptionalTestArgs(coverpkg, covermode, cpu, parallel, timeout string, s
 	return args
 }
 
-// getPkgs returns packages for mesuring coverage. Returned packages doesn't
+// getPkgs returns packages for measuring coverage. Returned packages doesn't
 // contain vendor packages.
 func getPkgs(pkg string) ([]string, error) {
 	if pkg == "" {
